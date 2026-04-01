@@ -46,6 +46,19 @@ Males 40-55, $2M+ revenue, 720+ credit, established operators. They have the stu
 Return ONLY the revised teleprompter script. No explanations, no "here's what I changed" commentary.
 Start directly with [HOOK] and end with the [CTA] section.`;
 
+const PROPOSAL_SYSTEM = `You are Patrick's script revision assistant. Your job is to review his teleprompter script, understand his feedback, and EXPLAIN what changes you'd make — in a conversational, direct way. Talk to him like a collaborator, not a robot.
+
+## HOW TO RESPOND
+- Start with a brief read on the script (1 sentence — what's working)
+- Then list the specific changes you'd make, numbered, in plain language
+- Keep it concise — 3-6 bullet points max
+- End with something like "Want me to apply these?" or "Should I go ahead, or do you want to adjust anything first?"
+- Be specific: "I'd tighten the hook by cutting the first two sentences and starting with the question" — NOT "I'd improve the hook"
+- If Patrick gave a score, acknowledge it naturally
+
+## TONE
+Conversational, direct, like a creative director giving notes. No corporate fluff.`;
+
 const CHAT_ADDON = `
 
 ## ADDITIONAL ROLE: SCRIPT CONSULTANT
@@ -57,7 +70,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-async function callClaude(system: string, messages: { role: string; content: string }[]): Promise<string> {
+async function callClaude(system: string, messages: { role: string; content: string }[], maxTokens = 4096): Promise<string> {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -66,8 +79,8 @@ async function callClaude(system: string, messages: { role: string; content: str
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6-20250514',
-      max_tokens: 4096,
+      model: 'claude-sonnet-4-5-20250929',
+      max_tokens: maxTokens,
       system,
       messages,
     }),
@@ -95,31 +108,40 @@ Deno.serve(async (req) => {
     if (action === 'revise') {
       const { script, feedback, score, video_title, revision_history } = body;
 
-      const userMessage = `## CURRENT SCRIPT
+      const scriptContext = `## CURRENT SCRIPT
 Title: ${video_title}
 ${score ? `Score: ${score}/10` : ''}
 
 ${script}
 
 ## FEEDBACK
-${feedback}
+${feedback}`;
 
-## TASK
-Revise this teleprompter script based on the feedback above. Return ONLY the improved script, ready for teleprompter.`;
-
-      const messages: { role: string; content: string }[] = [];
+      // Build history context
+      const historyMessages: { role: string; content: string }[] = [];
       if (revision_history) {
         for (const entry of revision_history.slice(-3)) {
-          messages.push({ role: 'user', content: entry.feedback || '' });
-          messages.push({ role: 'assistant', content: entry.result || '' });
+          historyMessages.push({ role: 'user', content: entry.feedback || '' });
+          historyMessages.push({ role: 'assistant', content: entry.result || '' });
         }
       }
-      messages.push({ role: 'user', content: userMessage });
 
-      const revisedScript = await callClaude(SYSTEM_PROMPT, messages);
+      // Two parallel calls: proposal summary + full revision
+      const [proposal, revisedScript] = await Promise.all([
+        // 1. Conversational proposal
+        callClaude(PROPOSAL_SYSTEM, [
+          ...historyMessages,
+          { role: 'user', content: scriptContext },
+        ], 800),
+        // 2. Full revised script
+        callClaude(SYSTEM_PROMPT, [
+          ...historyMessages,
+          { role: 'user', content: `${scriptContext}\n\n## TASK\nRevise this teleprompter script based on the feedback above. Return ONLY the improved script, ready for teleprompter.` },
+        ], 4096),
+      ]);
 
       return new Response(
-        JSON.stringify({ revised_script: revisedScript, model: 'claude-sonnet-4-6' }),
+        JSON.stringify({ proposal, revised_script: revisedScript, model: 'claude-sonnet-4-5' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
 
@@ -140,7 +162,7 @@ Revise this teleprompter script based on the feedback above. Return ONLY the imp
       const response = await callClaude(SYSTEM_PROMPT + CHAT_ADDON, messages);
 
       return new Response(
-        JSON.stringify({ response, model: 'claude-sonnet-4-6' }),
+        JSON.stringify({ response, model: 'claude-sonnet-4-5' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
 
